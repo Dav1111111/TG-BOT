@@ -1,3 +1,0 @@
-python-telegram-bot==21.0.1  # Фиксация версии
-openai>=1.0.0  # Новая версия API
-python-dotenv==1.0.0

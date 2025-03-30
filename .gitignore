@@ -1,5 +1,26 @@
 __pycache__/
-*.pyc
+*.py[cod]
 chat_history.json
 .env
 .vscode/
+*.db
+.DS_Store
+
+# Виртуальное окружение
+.venv/
+venv/
+
+# Логи
+*.log
+
+# Временные файлы и директории
+temp_uploads/
+tmp/
+
+# Векторные индексы (могут быть очень большими)
+vector_storage/faiss_index/
+
+# Сертификаты и ключи
+*.pem
+*.key
+*.crt
