@@ -83,7 +83,7 @@ def format_business_plan(text):
     # Remove markdown asterisks formatting
     text = remove_asterisks(text)
     
-    # Replace section numbers with bold formatting (1. -> <b>1.</b>)
+    # Форматируем заголовки с нумерацией жирным шрифтом
     text = re.sub(r'(\d+\.\s+)([^\n]+)', r'<b>\1\2</b>', text)
     
     # Ensure there's blank line after section headers

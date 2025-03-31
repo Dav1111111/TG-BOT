@@ -11,9 +11,10 @@ BOT_COMMANDS = [
     BotCommand(command="start", description="Начать работу с ботом"),
     BotCommand(command="business", description="Создать бизнес-план"),
     BotCommand(command="value", description="Создать ценностное предложение"),
-    BotCommand(command="help", description="Помощь по боту"),
+    BotCommand(command="subscribe", description="Оплата"),
+    BotCommand(command="help", description="О боте"),
     BotCommand(command="feedback", description="Отправить обратную связь"),
-    BotCommand(command="subscribe", description="Оформить подписку"),
+
 ]
 
 # Команды для администраторов
