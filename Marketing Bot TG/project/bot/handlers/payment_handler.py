@@ -5,11 +5,12 @@ import logging
 from datetime import datetime, timedelta
 from aiogram import types, Router, F
 from aiogram.filters import Command
-from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
+from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
 from bot.config import config
 from bot.database import DBManager
+from bot.utils.yookassa_client import create_payment, check_payment_status
 
 # Инициализируем логгер
 logger = logging.getLogger(__name__)
@@ -18,190 +19,196 @@ logger = logging.getLogger(__name__)
 db = DBManager()
 
 # Настройки платежей
-PAYMENT_PROVIDER_TOKEN = config.PAYMENT_PROVIDER_TOKEN
-CURRENCY = "RUB"
+CURRENCY = config.PAYMENT_CURRENCY
 
-# Варианты подписок
-SUBSCRIPTION_OPTIONS = {
-    "week": {
-        "title": "Недельная подписка",
-        "description": "Полный доступ к боту на 7 дней",
-        "price": 299,  # В минимальных единицах валюты (копейки)
-        "days": 7,
-        "messages_limit": 100,
-    },
-    "month": {
-        "title": "Месячная подписка",
-        "description": "Полный доступ к боту на 30 дней",
-        "price": 999,  # В минимальных единицах валюты (копейки)
-        "days": 30,
-        "messages_limit": 500,
-    },
-    "year": {
-        "title": "Годовая подписка",
-        "description": "Полный доступ к боту на 365 дней",
-        "price": 5999,  # В минимальных единицах валюты (копейки)
-        "days": 365,
-        "messages_limit": 5000,
-    }
+# Информация о подписке
+SUBSCRIPTION = {
+    "title": "Премиум подписка",
+    "description": "Полный доступ к функциям бота",
+    "price": 1,  # В рублях
+    "days": 30,  # Срок действия в днях
+    "messages_limit": 500  # Лимит сообщений
 }
 
 async def subscription_command(message: Message):
     """
-    Обработчик команды /subscribe - показывает варианты подписки
+    Обработчик команды /subscribe - показывает информацию о подписке
     """
-    if not PAYMENT_PROVIDER_TOKEN:
+    if not config.YOOKASSA_SHOP_ID or not config.YOOKASSA_SECRET_KEY:
         await message.answer(
             "⚠️ Платежная система временно недоступна. "
             "Пожалуйста, обратитесь к администратору."
         )
-        logger.warning("Payment provider token not configured")
+        logger.warning("YooKassa credentials not configured")
         return
-    
-    # Создаем клавиатуру с вариантами подписки
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(
-            text=f"{SUBSCRIPTION_OPTIONS['week']['title']} - {SUBSCRIPTION_OPTIONS['week']['price'] / 100} {CURRENCY}",
-            callback_data="subscribe_week"
-        )],
-        [types.InlineKeyboardButton(
-            text=f"{SUBSCRIPTION_OPTIONS['month']['title']} - {SUBSCRIPTION_OPTIONS['month']['price'] / 100} {CURRENCY}",
-            callback_data="subscribe_month"
-        )],
-        [types.InlineKeyboardButton(
-            text=f"{SUBSCRIPTION_OPTIONS['year']['title']} - {SUBSCRIPTION_OPTIONS['year']['price'] / 100} {CURRENCY}",
-            callback_data="subscribe_year"
-        )]
-    ])
     
     # Получаем информацию о текущем статусе подписки пользователя
     user_id = message.from_user.id
-    subscription = db.get_subscription_status(user_id)
+    subscription_status = db.get_subscription_status(user_id)
     msg_count = db.get_user_message_count(user_id)
     
-    # Формируем сообщение о текущем статусе и доступных опциях
-    await message.answer(
-        f"💬 <b>Ваш текущий статус:</b> {subscription.capitalize()}\n"
-        f"📊 Использовано сообщений: {msg_count}/{config.SUBSCRIPTION_LIMITS.get(subscription, 50)}\n\n"
-        f"📱 <b>Доступные варианты подписки:</b>\n\n"
-        f"• <b>Недельная подписка:</b> {SUBSCRIPTION_OPTIONS['week']['price'] / 100} {CURRENCY}\n"
-        f"  ✓ {SUBSCRIPTION_OPTIONS['week']['messages_limit']} сообщений\n"
-        f"  ✓ Доступ к полной базе знаний\n"
-        f"  ✓ Расширенные возможности бота\n\n"
-        f"• <b>Месячная подписка:</b> {SUBSCRIPTION_OPTIONS['month']['price'] / 100} {CURRENCY}\n"
-        f"  ✓ {SUBSCRIPTION_OPTIONS['month']['messages_limit']} сообщений\n"
-        f"  ✓ Доступ к полной базе знаний\n"
-        f"  ✓ Расширенные возможности бота\n\n"
-        f"• <b>Годовая подписка:</b> {SUBSCRIPTION_OPTIONS['year']['price'] / 100} {CURRENCY}\n"
-        f"  ✓ {SUBSCRIPTION_OPTIONS['year']['messages_limit']} сообщений\n"
-        f"  ✓ Доступ к полной базе знаний\n"
-        f"  ✓ Расширенные возможности бота\n"
-        f"  ✓ Приоритетная поддержка\n\n"
-        f"Выберите подходящий вариант:",
+    # Формируем текст сообщения
+    if subscription_status == "premium":
+        # Получаем дату окончания подписки
+        expiry_date = db.execute_query(
+            "SELECT subscription_expiry FROM users WHERE user_id = ?",
+            (user_id,),
+            True
+        )
+        
+        expiry_str = "Неизвестно"
+        if expiry_date and expiry_date[0][0]:
+            try:
+                # Преобразуем строку даты в объект datetime
+                if isinstance(expiry_date[0][0], str):
+                    expiry = datetime.fromisoformat(expiry_date[0][0])
+                else:
+                    expiry = expiry_date[0][0]
+                expiry_str = expiry.strftime("%d.%m.%Y")
+            except Exception as e:
+                logger.error(f"Error parsing expiry date: {e}")
+        
+        text = (
+            f"🔹 <b>Информация о подписке</b>\n\n"
+            f"У вас активна <b>Премиум подписка</b>\n"
+            f"Действует до: <b>{expiry_str}</b>\n"
+            f"Использовано сообщений: <b>{msg_count}/{SUBSCRIPTION['messages_limit']}</b>\n\n"
+            f"Хотите продлить подписку?"
+        )
+    else:
+        limit = config.SUBSCRIPTION_LIMITS["free"]
+        text = (
+            f"🔹 <b>Информация о подписке</b>\n\n"
+            f"У вас базовый тариф (бесплатный)\n"
+            f"Лимит сообщений: <b>{limit}</b>\n"
+            f"Использовано: <b>{msg_count}/{limit}</b>\n\n"
+            f"Преимущества Премиум подписки:\n"
+            f"✅ Расширенный лимит сообщений: {SUBSCRIPTION['messages_limit']}\n"
+            f"✅ Доступ ко всем функциям бота\n"
+            f"✅ Приоритетная поддержка\n\n"
+            f"Стоимость: <b>{SUBSCRIPTION['price']} {CURRENCY}</b>\n"
+            f"Срок: <b>{SUBSCRIPTION['days']} дней</b>"
+        )
+    
+    # Создаем кнопку для оплаты
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(
+            text=f"Оформить подписку за {SUBSCRIPTION['price']} {CURRENCY}",
+            callback_data="subscribe"
+        )]
+    ])
+    
+    # Отправляем сообщение с информацией о подписке
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    logger.info(f"Subscription info shown to user {user_id}")
+
+async def subscribe_callback(callback_query: types.CallbackQuery):
+    """
+    Обработчик нажатия на кнопку подписки
+    """
+    await callback_query.answer()
+    
+    user_id = callback_query.from_user.id
+    
+    # Создаем платеж в ЮKassa
+    payment_info = create_payment(
+        amount=SUBSCRIPTION["price"],
+        description=f"{SUBSCRIPTION['title']} - {SUBSCRIPTION['description']}",
+        user_id=user_id,
+        subscription_type="premium"
+    )
+    
+    if not payment_info:
+        await callback_query.message.answer(
+            "❌ Не удалось создать платеж. Пожалуйста, попробуйте позже."
+        )
+        return
+    
+    # Сохраняем информацию о платеже в базе данных
+    db.save_payment_info(user_id, payment_info["id"], "premium", SUBSCRIPTION["price"])
+    
+    # Создаем клавиатуру с кнопками оплаты и проверки
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(
+            text="Оплатить",
+            url=payment_info["confirmation_url"]
+        )],
+        [types.InlineKeyboardButton(
+            text="Проверить оплату",
+            callback_data="check_payment"
+        )]
+    ])
+    
+    # Отправляем сообщение с ссылкой на оплату
+    await callback_query.message.answer(
+        f"💳 <b>Оплата подписки</b>\n\n"
+        f"Тариф: <b>{SUBSCRIPTION['title']}</b>\n"
+        f"Сумма: <b>{SUBSCRIPTION['price']} {CURRENCY}</b>\n"
+        f"Длительность: <b>{SUBSCRIPTION['days']} дней</b>\n\n"
+        f"Нажмите кнопку ниже, чтобы перейти к оплате. После оплаты вернитесь сюда и нажмите 'Проверить оплату'.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
     
-    logger.info(f"User {user_id} requested subscription options")
+    logger.info(f"Payment link sent to user {user_id}")
 
-async def subscribe_callback(callback_query: types.CallbackQuery):
+async def check_payment_callback(callback_query: types.CallbackQuery):
     """
-    Обработчик нажатия на кнопки подписки
+    Обработчик нажатия на кнопку проверки оплаты
     """
     await callback_query.answer()
     
-    # Определяем выбранный план подписки
-    sub_type = callback_query.data.split("_")[1]
-    if sub_type not in SUBSCRIPTION_OPTIONS:
-        await callback_query.message.answer("⚠️ Неверный тип подписки")
+    # Получаем ID пользователя
+    user_id = callback_query.from_user.id
+    
+    # Получаем информацию о последнем платеже пользователя
+    payment_info = db.get_last_payment(user_id)
+    
+    if not payment_info:
+        await callback_query.message.answer("⚠️ Информация о платеже не найдена")
         return
     
-    # Получаем информацию о выбранной подписке
-    subscription = SUBSCRIPTION_OPTIONS[sub_type]
+    payment_id = payment_info[0]
     
-    # Создаем счет для оплаты
-    await send_invoice(callback_query.message, sub_type, subscription)
+    # Проверяем статус платежа
+    payment_status = check_payment_status(payment_id)
     
-    logger.info(f"User {callback_query.from_user.id} selected {sub_type} subscription")
-
-async def send_invoice(message: Message, sub_type: str, subscription: dict):
-    """
-    Отправляет счет для оплаты подписки
-    """
-    # Формируем счет
-    await message.answer_invoice(
-        title=subscription["title"],
-        description=subscription["description"],
-        provider_token=PAYMENT_PROVIDER_TOKEN,
-        currency=CURRENCY,
-        prices=[LabeledPrice(
-            label=subscription["title"],
-            amount=subscription["price"]
-        )],
-        payload=f"subscription_{sub_type}",
-        start_parameter="subscribe",
-        protect_content=False
-    )
-
-async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    """
-    Обрабатывает запрос предварительной проверки платежа
-    """
-    # В реальном приложении здесь может быть логика проверки платежа
-    # Например, проверка наличия товара, валидность данных и т.д.
+    if not payment_status:
+        await callback_query.message.answer(
+            "❌ Не удалось проверить статус платежа. Пожалуйста, попробуйте позже."
+        )
+        return
     
-    # Для демонстрации просто подтверждаем все платежи
-    await pre_checkout_query.answer(ok=True)
-    
-    logger.info(f"Pre-checkout query {pre_checkout_query.id} from user {pre_checkout_query.from_user.id} confirmed")
-
-async def successful_payment(message: Message):
-    """
-    Обрабатывает успешный платеж
-    """
-    payment_info = message.successful_payment
-    user_id = message.from_user.id
-    
-    # Получаем тип подписки
-    sub_type = payment_info.invoice_payload.split("_")[1]
-    
-    # Обновляем статус подписки пользователя
-    try:
-        # Устанавливаем тип подписки и дату окончания
-        subscription_info = SUBSCRIPTION_OPTIONS[sub_type]
-        
-        # В реальном приложении здесь будет обновление базы данных
-        # с типом подписки и датой истечения
-        update_subscription(user_id, "premium", subscription_info["days"])
-        
-        # Обновляем лимит сообщений
-        update_message_limit(user_id, subscription_info["messages_limit"])
+    # Если платеж успешно оплачен
+    if payment_status["status"] == "succeeded" and payment_status["paid"]:
+        # Обновляем статус подписки пользователя
+        update_subscription(user_id, "premium", SUBSCRIPTION["days"])
+        update_message_limit(user_id, SUBSCRIPTION["messages_limit"])
         
         # Отправляем сообщение об успешной подписке
-        await message.answer(
+        await callback_query.message.answer(
             f"✅ <b>Подписка успешно оформлена!</b>\n\n"
-            f"Подписка: {subscription_info['title']}\n"
-            f"Срок действия: {subscription_info['days']} дней\n"
-            f"Лимит сообщений: {subscription_info['messages_limit']}\n\n"
+            f"Подписка: {SUBSCRIPTION['title']}\n"
+            f"Срок действия: {SUBSCRIPTION['days']} дней\n"
+            f"Лимит сообщений: {SUBSCRIPTION['messages_limit']}\n\n"
             f"Благодарим за покупку! Теперь вам доступны расширенные возможности бота.",
             parse_mode="HTML"
         )
         
-        logger.info(f"User {user_id} successfully purchased {sub_type} subscription")
-    
-    except Exception as e:
-        logger.error(f"Error processing payment for user {user_id}: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при обработке платежа. "
-            "Пожалуйста, обратитесь к администратору."
+        logger.info(f"User {user_id} successfully purchased premium subscription")
+    else:
+        # Отправляем сообщение о статусе платежа
+        await callback_query.message.answer(
+            f"ℹ️ <b>Статус платежа</b>: {payment_status['status']}\n\n"
+            f"Пожалуйста, завершите оплату или попробуйте позже.",
+            parse_mode="HTML"
         )
 
 def update_subscription(user_id: int, status: str, days: int):
     """
     Обновляет статус подписки пользователя в базе данных
     """
-    # Добавляем метод для изменения статуса подписки и даты окончания
-    # Этот метод еще должен быть реализован в DBManager
     try:
         # Вычисляем дату окончания подписки
         expiry_date = datetime.now() + timedelta(days=days)
@@ -243,11 +250,10 @@ def register_handlers(dp: Router):
     # Команда для подписки
     dp.message.register(subscription_command, Command("subscribe"))
     
-    # Обработчик нажатия на кнопки подписки
-    dp.callback_query.register(subscribe_callback, F.data.startswith("subscribe_"))
+    # Обработчик нажатия на кнопку подписки
+    dp.callback_query.register(subscribe_callback, F.data == "subscribe")
     
-    # Обработчики платежей
-    dp.pre_checkout_query.register(process_pre_checkout)
-    dp.message.register(successful_payment, F.successful_payment)
+    # Обработчик проверки оплаты
+    dp.callback_query.register(check_payment_callback, F.data == "check_payment")
     
     logger.info("Payment handlers registered") 

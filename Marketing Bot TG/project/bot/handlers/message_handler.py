@@ -6,14 +6,14 @@ import asyncio
 from aiogram import types, F
 from bot.config import config
 from bot.config.prompts import GPT_CONTEXT, KNOWLEDGE_BASE_CONTEXT
-from bot.database import DBManager
+from bot.database.async_db_manager import AsyncDBManager
 from bot.utils import remove_asterisks, split_message
 from bot.utils.ai_client import generate_gpt_response
 from bot.knowledge_base import KnowledgeBaseManager
 from aiogram.filters import Filter
 
 logger = logging.getLogger(__name__)
-db = DBManager()
+db = AsyncDBManager()
 kb_manager = KnowledgeBaseManager()
 
 async def handle_message(message: types.Message):
@@ -30,21 +30,49 @@ async def handle_message(message: types.Message):
         logger.info(f"User {user_id} replied to bot message")
 
     # Update last activity
-    db.update_user_activity(user_id)
+    await db.update_user_activity(user_id)
+    
+    # Сразу сохраняем входящее сообщение в историю чата
+    # Это гарантирует, что даже если инкремент счетчика не сработает,
+    # сообщение будет учтено при подсчете сообщений из истории
+    logger.info(f"Saving incoming message from user {user_id} to chat history")
+    message_saved = await db.save_chat_message(user_id, user_message, None)  # Response будет заполнен позже
+    if not message_saved:
+        logger.error(f"Failed to save message to chat history for user {user_id}")
+
+    # Increment message count immediately for any text message handled
+    # Читаем текущий счетчик ДО инкремента для лога
+    msg_count_before_increment = await db.get_user_message_count(user_id) 
+    logger.info(f"Attempting to increment message count for user {user_id} upon receiving message. Count before: {msg_count_before_increment}")
+    
+    # Увеличиваем счетчик сообщений
+    increment_success = await db.increment_message_count(user_id)
+    
+    # Проверяем результат инкремента
+    if increment_success:
+        # Reading count again immediately to confirm increment
+        new_count_read = await db.get_user_message_count(user_id)
+        logger.info(f"Successfully incremented message count for user {user_id}. Count read after increment: {new_count_read}")
+        
+        # Дополнительная проверка, что счетчик действительно увеличился
+        if new_count_read <= msg_count_before_increment and msg_count_before_increment > 0:
+            logger.warning(f"Counter anomaly detected for user {user_id}: before={msg_count_before_increment}, after={new_count_read}")
+    else:
+        logger.error(f"Failed to increment message count for user {user_id}")
 
     # Send processing message
     processing_msg = await message.answer("Обрабатываю ваш запрос...")
 
     try:
-        # Check message limits
-        msg_count = db.get_user_message_count(user_id)
-        subscription = db.get_subscription_status(user_id)
+        # Check message limits (Проверка лимита остается здесь, но счетчик уже увеличен)
+        subscription = await db.get_subscription_status(user_id)
+        # Получаем актуальные значения прямо перед проверкой (счетчик уже должен быть инкрементирован)
+        msg_count = await db.get_user_message_count(user_id) 
+        limit = await db.get_message_limit(user_id)
+        logger.info(f"Checking limits for user {user_id}. Count: {msg_count}, Limit: {limit}, Subscription: {subscription}")
 
-        # Get subscription limits - теперь используем метод из DBManager
-        limit = db.get_message_limit(user_id)
-
-        if msg_count >= limit:
-            # Если пользователь достиг лимита, предлагаем оформить подписку
+        if msg_count > limit: # Изменяем проверку на строгую > , т.к. инкремент был до проверки
+            # Если пользователь превысил лимит (с учетом только что отправленного сообщения)
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(
                     text="💎 Оформить подписку",
@@ -52,9 +80,10 @@ async def handle_message(message: types.Message):
                 )]
             ])
             
+            # Корректируем текст, чтобы он отражал, что лимит превышен *включая* текущее сообщение
             await processing_msg.edit_text(
                 "🔒 <b>Достигнут лимит сообщений</b>\n\n"
-                f"Вы использовали {msg_count} из {limit} доступных сообщений в вашем тарифе '{subscription}'.\n\n"
+                f"Вы использовали {msg_count} из {limit} доступных сообщений в вашем тарифе '{subscription}' (включая только что отправленное).\n\n"
                 "Для продолжения работы с ботом вы можете:\n"
                 "• Оформить платную подписку\n"
                 "• Дождаться сброса лимита\n\n"
@@ -80,11 +109,9 @@ async def handle_message(message: types.Message):
         # Remove formatting
         response = remove_asterisks(response)
 
-        # Increment message count
-        db.increment_message_count(user_id)
-
-        # Save to history
-        db.save_chat_message(user_id, user_message, response)
+        # Update the message in history with the response
+        await db.update_chat_response(user_id, user_message, response)
+        logger.info(f"Updated chat history with response for user {user_id}")
 
         # Delete processing message
         await processing_msg.delete()
@@ -105,7 +132,7 @@ async def gpt_request(prompt, user_id, knowledge_content=None, max_retry=2):
     retry_count = 0
 
     # Get chat history from database
-    chat_history = db.get_chat_history(user_id)
+    chat_history = await db.get_chat_history(user_id)
 
     # Determine context based on knowledge content
     system_content = GPT_CONTEXT
@@ -121,8 +148,12 @@ async def gpt_request(prompt, user_id, knowledge_content=None, max_retry=2):
     # Add reversed history (chronological order)
     if chat_history:
         for msg, resp in reversed(chat_history):
-            messages.append({"role": "user", "content": msg})
-            messages.append({"role": "assistant", "content": resp})
+            # Дополнительная проверка на случай, если в истории оказались записи с null
+            if msg is not None and resp is not None:
+                messages.append({"role": "user", "content": msg})
+                messages.append({"role": "assistant", "content": resp})
+            else:
+                logger.warning(f"Skipping null message or response in chat history for user {user_id}")
 
     # Add current user message
     messages.append({"role": "user", "content": prompt})

@@ -10,3 +10,5 @@ langchain-openai>=0.0.2
 langchain-community>=0.0.1
 faiss-cpu>=1.7.4
 numpy>=1.24.0
+yookassa>=2.3.0
+aiosqlite>=0.21.0

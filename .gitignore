@@ -58,7 +58,9 @@ venv.bak/
 chat_history.json
 temp_uploads/
 tmp/
-vector_storage/
+
+# Векторные индексы (могут быть очень большими)
+vector_storage/faiss_index/
 
 # Сертификаты и ключи
 *.pem

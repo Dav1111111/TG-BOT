@@ -16,6 +16,7 @@ from bot.handlers import register_handlers
 from bot.utils.menu_commands import set_bot_commands, set_menu_button
 from bot.knowledge_base.vector_kb_manager import VectorKnowledgeBaseManager
 from bot.database import DBManager
+from bot.database.async_db_manager import AsyncDBManager
 from pathlib import Path
 
 # Configure logging
@@ -53,6 +54,8 @@ def load_knowledge_base():
         logging.info(f"Загрузка документа в векторную базу знаний: {file_path}")
         
         # Инициализация менеджеров
+        # Примечание: Для базы знаний пока используем старый DBManager, 
+        # так как VectorKnowledgeBaseManager не адаптирован для асинхронного доступа
         db_manager = DBManager()
         vector_kb_manager = VectorKnowledgeBaseManager(db_manager)
         
@@ -87,6 +90,12 @@ def load_knowledge_base():
 
 async def main():
     """Main function to start the bot"""
+    # Инициализируем асинхронную базу данных
+    async_db = AsyncDBManager()
+    await async_db.connect()
+    await async_db.setup_database()
+    logging.info("Асинхронное соединение с базой данных инициализировано")
+    
     # Загружаем документ в базу знаний при запуске
     load_knowledge_base()
     
@@ -103,9 +112,14 @@ async def main():
     # Register all handlers
     register_handlers(dp)
 
-    # Start polling
-    logging.info("Starting bot")
-    await dp.start_polling(bot, close_timeout=5, allowed_updates=["message", "callback_query", "inline_query"], drop_pending_updates=True)
+    try:
+        # Start polling
+        logging.info("Starting bot")
+        await dp.start_polling(bot, close_timeout=5, allowed_updates=["message", "callback_query", "inline_query"], drop_pending_updates=True)
+    finally:
+        # Закрываем соединение с базой данных при завершении работы
+        await async_db.close()
+        logging.info("Соединение с базой данных закрыто")
 
 if __name__ == "__main__":
     try:

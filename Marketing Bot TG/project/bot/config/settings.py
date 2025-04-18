@@ -64,6 +64,9 @@ class Config:
 
     # Payment settings
     PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
+    YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
+    YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+    PAYMENT_RETURN_URL = os.getenv("PAYMENT_RETURN_URL", "https://t.me/your_bot_username")
     PAYMENT_CURRENCY = "RUB"
 
     # Logging settings
